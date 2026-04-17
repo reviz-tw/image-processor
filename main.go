@@ -37,7 +37,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", healthHandler)
 	mux.HandleFunc("/healthz", healthHandler)
-	mux.Handle("/events", eventHandler(processor))
+	mux.Handle("/image_processor", eventHandler(processor))
 
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,

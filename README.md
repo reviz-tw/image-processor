@@ -16,7 +16,7 @@
 
 HTTP endpoint:
 
-- `POST /events`
+- `POST /image_processor`
 - `GET /`
 - `GET /healthz`
 
@@ -51,7 +51,7 @@ go run .
 這個服務適合部署到 Cloud Run，並搭配：
 
 - Eventarc 直接轉 GCS finalized event 到 HTTP
-- 或 Pub/Sub push subscription 導到 `/events`
+- 或 Pub/Sub push subscription 導到 `/image_processor`
 
 若使用 Cloud Run，請確保執行身份有：
 
