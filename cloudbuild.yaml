@@ -1,0 +1,50 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    id: Build
+    args:
+      - build
+      - -t
+      - ${_AR_HOSTNAME}/${PROJECT_ID}/${_AR_REPOSITORY}/${_SERVICE_NAME}:${COMMIT_SHA}
+      - -f
+      - Dockerfile
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    id: Push
+    args:
+      - push
+      - ${_AR_HOSTNAME}/${PROJECT_ID}/${_AR_REPOSITORY}/${_SERVICE_NAME}:${COMMIT_SHA}
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: Deploy
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE_NAME}
+      - --platform=${_PLATFORM}
+      - --region=${_DEPLOY_REGION}
+      - --image=${_AR_HOSTNAME}/${PROJECT_ID}/${_AR_REPOSITORY}/${_SERVICE_NAME}:${COMMIT_SHA}
+      - --port=8080
+      - --quiet
+      - --labels=managed-by=cloud-build,commit-sha=${COMMIT_SHA},build-id=${BUILD_ID},trigger-id=${_TRIGGER_ID}
+
+images:
+  - ${_AR_HOSTNAME}/${PROJECT_ID}/${_AR_REPOSITORY}/${_SERVICE_NAME}:${COMMIT_SHA}
+
+substitutions:
+  _AR_HOSTNAME: asia-east1-docker.pkg.dev
+  _AR_REPOSITORY: cloud-run-source-deploy
+  _SERVICE_NAME: image-processor
+  _DEPLOY_REGION: asia-east1
+  _PLATFORM: managed
+  _TRIGGER_ID: manual
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  substitutionOption: ALLOW_LOOSE
+
+tags:
+  - image-processor
+  - cloud-run
+  - go
