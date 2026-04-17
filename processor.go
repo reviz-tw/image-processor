@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"cloud.google.com/go/storage"
+	webp "github.com/gen2brain/webp"
 	xdraw "golang.org/x/image/draw"
 	"golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"
@@ -93,6 +94,15 @@ func (p *Processor) Process(ctx context.Context, event storageEvent) error {
 			return fmt.Errorf("encode %s: %w", mainObjectName, err)
 		}
 		if err := p.uploadObject(ctx, event.Bucket, mainObjectName, contentTypeFromExt(ext), mainBytes); err != nil {
+			return err
+		}
+
+		webpObjectName := baseDir + nameWithoutExt + "-" + target.Label + ".webp"
+		webpBytes, err := encodeWebP(resized)
+		if err != nil {
+			return fmt.Errorf("encode %s: %w", webpObjectName, err)
+		}
+		if err := p.uploadObject(ctx, event.Bucket, webpObjectName, "image/webp", webpBytes); err != nil {
 			return err
 		}
 	}
@@ -219,6 +229,18 @@ func encodeByExt(img image.Image, ext string) ([]byte, error) {
 		if err := jpeg.Encode(&buf, flattenIfNeeded(img), &jpeg.Options{Quality: 85}); err != nil {
 			return nil, err
 		}
+	}
+	return buf.Bytes(), nil
+}
+
+func encodeWebP(img image.Image) ([]byte, error) {
+	var buf bytes.Buffer
+	err := webp.Encode(&buf, img, webp.Options{
+		Quality: 85,
+		Method:  4,
+	})
+	if err != nil {
+		return nil, err
 	}
 	return buf.Bytes(), nil
 }

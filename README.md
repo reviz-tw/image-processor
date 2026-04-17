@@ -4,7 +4,7 @@
 
 - 接收 GCS object create event
 - 從 GCS 下載原圖並產出多組 resize 圖
-- 上傳 resize 後的原格式檔
+- 上傳 resize 後的原格式檔與 `.webp`
 - 透過 env variables 決定是否加上 watermark
 
 ## Event 格式
@@ -62,4 +62,6 @@ go run .
 
 - 只處理副檔名為 `jpg`、`jpeg`、`png`、`gif`、`tif`、`tiff`
 - 已經帶有 `-w###` 的檔名會直接略過，避免無限遞迴
-- 每個 resize target 會輸出原副檔名版本，例如 `images/foo-w800.jpg`
+- 每個 resize target 會輸出：
+- 原副檔名版本，例如 `images/foo-w800.jpg`
+- WebP 版本，例如 `images/foo-w800.webp`
