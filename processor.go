@@ -18,6 +18,7 @@ import (
 
 	"cloud.google.com/go/storage"
 	webp "github.com/gen2brain/webp"
+	exifpkg "github.com/rwcarlsen/goexif/exif"
 	xdraw "golang.org/x/image/draw"
 	"golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"
@@ -76,11 +77,21 @@ func (p *Processor) Process(ctx context.Context, event storageEvent) error {
 	if err != nil {
 		return fmt.Errorf("decode image: %w", err)
 	}
+	sourceImg = applyEXIFOrientation(sourceImg, originalBytes)
 
 	base := filepath.Base(event.Name)
-	ext := strings.ToLower(filepath.Ext(base))
+	ext := filepath.Ext(base)
 	nameWithoutExt := strings.TrimSuffix(base, filepath.Ext(base))
 	baseDir := strings.TrimSuffix(event.Name, base)
+
+	originalWebPName := baseDir + nameWithoutExt + ".webP"
+	originalWebPBytes, err := encodeWebP(sourceImg)
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", originalWebPName, err)
+	}
+	if err := p.uploadObject(ctx, event.Bucket, originalWebPName, "image/webp", originalWebPBytes); err != nil {
+		return err
+	}
 
 	for _, target := range p.cfg.ResizeTargets {
 		resized := resizeImage(sourceImg, target.Width)
@@ -97,7 +108,7 @@ func (p *Processor) Process(ctx context.Context, event storageEvent) error {
 			return err
 		}
 
-		webpObjectName := baseDir + nameWithoutExt + "-" + target.Label + ".webp"
+		webpObjectName := baseDir + nameWithoutExt + "-" + target.Label + ".webP"
 		webpBytes, err := encodeWebP(resized)
 		if err != nil {
 			return fmt.Errorf("encode %s: %w", webpObjectName, err)
@@ -128,9 +139,13 @@ func (p *Processor) uploadObject(ctx context.Context, bucketName, objectName, co
 }
 
 func isSupportedImage(name string) bool {
-	ext := strings.ToLower(filepath.Ext(name))
-	switch ext {
-	case ".jpg", ".jpeg", ".png", ".gif", ".tif", ".tiff":
+	ext := filepath.Ext(name)
+	if ext == ".webP" {
+		return false
+	}
+
+	switch strings.ToLower(ext) {
+	case ".jpg", ".jpeg", ".png", ".gif", ".tif", ".tiff", ".webp":
 		return true
 	default:
 		return false
@@ -225,12 +240,86 @@ func encodeByExt(img image.Image, ext string) ([]byte, error) {
 		if err := tiff.Encode(&buf, img, nil); err != nil {
 			return nil, err
 		}
+	case ".webp":
+		return encodeWebP(img)
 	default:
 		if err := jpeg.Encode(&buf, flattenIfNeeded(img), &jpeg.Options{Quality: 85}); err != nil {
 			return nil, err
 		}
 	}
 	return buf.Bytes(), nil
+}
+
+func applyEXIFOrientation(img image.Image, data []byte) image.Image {
+	orientation := exifOrientation(data)
+	switch orientation {
+	case 3:
+		return rotate180(img)
+	case 6:
+		return rotate90CW(img)
+	case 8:
+		return rotate90CCW(img)
+	default:
+		return img
+	}
+}
+
+func exifOrientation(data []byte) int {
+	exifData, err := exifpkg.Decode(bytes.NewReader(data))
+	if err != nil {
+		return 1
+	}
+	tag, err := exifData.Get(exifpkg.Orientation)
+	if err != nil {
+		return 1
+	}
+	orientation, err := tag.Int(0)
+	if err != nil {
+		return 1
+	}
+	return orientation
+}
+
+func rotate180(src image.Image) *image.NRGBA {
+	img := toNRGBA(src)
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	dst := image.NewNRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			dst.Set(width-1-x, height-1-y, img.At(x, y))
+		}
+	}
+	return dst
+}
+
+func rotate90CW(src image.Image) *image.NRGBA {
+	img := toNRGBA(src)
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	dst := image.NewNRGBA(image.Rect(0, 0, height, width))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			dst.Set(height-1-y, x, img.At(x, y))
+		}
+	}
+	return dst
+}
+
+func rotate90CCW(src image.Image) *image.NRGBA {
+	img := toNRGBA(src)
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	dst := image.NewNRGBA(image.Rect(0, 0, height, width))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			dst.Set(y, width-1-x, img.At(x, y))
+		}
+	}
+	return dst
 }
 
 func encodeWebP(img image.Image) ([]byte, error) {

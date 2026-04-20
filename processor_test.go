@@ -6,6 +6,12 @@ func TestIsSupportedImage(t *testing.T) {
 	if !isSupportedImage("images/demo.JPG") {
 		t.Fatal("expected JPG to be supported")
 	}
+	if !isSupportedImage("images/demo.webp") {
+		t.Fatal("expected user-uploaded lowercase webp to be supported")
+	}
+	if isSupportedImage("images/demo.webP") {
+		t.Fatal("expected generated mixed-case webP to be skipped")
+	}
 	if isSupportedImage("images/demo.txt") {
 		t.Fatal("expected TXT to be unsupported")
 	}

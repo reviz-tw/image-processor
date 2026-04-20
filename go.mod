@@ -5,6 +5,7 @@ go 1.23.0
 require (
 	cloud.google.com/go/storage v1.43.0
 	github.com/gen2brain/webp v0.5.5
+	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
 	golang.org/x/image v0.19.0
 )
 
