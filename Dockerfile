@@ -14,6 +14,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Pre-download the AI model to bake it into the Docker image
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('clip-ViT-B-32')"
+
 # Copy Go binary
 COPY --from=builder /out/image-processor /app/image-processor
 

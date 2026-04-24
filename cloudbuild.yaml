@@ -1,3 +1,4 @@
+timeout: '1200s'
 steps:
   - name: gcr.io/cloud-builders/docker
     id: Build
@@ -29,6 +30,7 @@ steps:
       - --memory=4Gi
       - --cpu=2
       - --no-cpu-throttling
+      - --update-env-vars=ENABLE_IMAGE_VECTOR=true,DUPLICATE_COSINE_DISTANCE=0.2
       - --quiet
       - --labels=managed-by=cloud-build,commit-sha=${COMMIT_SHA},build-id=${BUILD_ID},trigger-id=${_TRIGGER_ID}
 
