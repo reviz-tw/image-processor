@@ -5,8 +5,18 @@ if [[ "${ENABLE_IMAGE_VECTOR,,}" == "true" || "$ENABLE_IMAGE_VECTOR" == "1" || "
     echo "Starting Python Vector Server on port 8081..."
     export VECTOR_PORT=8081
     uvicorn vector_server:app --host 127.0.0.1 --port 8081 &
-    # Give it a few seconds to load the model
-    sleep 3
+    PYTHON_PID=$!
+    
+    echo "Waiting for Python Vector Server to bind to port 8081..."
+    while ! (echo > /dev/tcp/127.0.0.1/8081) >/dev/null 2>&1; do
+        # Check if Python process is still alive
+        if ! kill -0 $PYTHON_PID 2>/dev/null; then
+            echo "🚨 CRITICAL: Python server crashed during startup! Shutting down container..."
+            exit 1
+        fi
+        sleep 0.5
+    done
+    echo "Python Vector Server is ready!"
 fi
 
 echo "Starting Go Image Processor..."
