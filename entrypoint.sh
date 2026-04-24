@@ -6,8 +6,15 @@ if [[ "${ENABLE_IMAGE_VECTOR,,}" == "true" || "$ENABLE_IMAGE_VECTOR" == "1" || "
     export VECTOR_PORT=8081
     uvicorn vector_server:app --host 127.0.0.1 --port 8081 &
     # Give it a few seconds to load the model
-    sleep 5
+    sleep 3
 fi
 
 echo "Starting Go Image Processor..."
-exec /app/image-processor
+/app/image-processor &
+
+# Wait for ANY background process to exit
+wait -n
+
+# If we reach here, it means either Python or Go has crashed.
+echo "🚨 CRITICAL: A background process (Python or Go) has unexpectedly exited! Shutting down container..."
+exit 1
