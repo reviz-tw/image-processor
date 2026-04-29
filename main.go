@@ -38,6 +38,7 @@ func main() {
 	mux.HandleFunc("/", healthHandler)
 	mux.HandleFunc("/healthz", healthHandler)
 	mux.Handle("/image_processor", eventHandler(processor))
+	mux.Handle("/batch_backfill_image_vector", batchBackfillImageVectorHandler(processor))
 
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,

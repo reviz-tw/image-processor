@@ -159,6 +159,32 @@ func (p *Processor) Process(ctx context.Context, event storageEvent) error {
 	return nil
 }
 
+func (p *Processor) BackfillImageVectorFromObject(ctx context.Context, bucketName, objectName, imageFileID string) error {
+	reader, err := p.storage.Bucket(bucketName).Object(objectName).NewReader(ctx)
+	if err != nil {
+		return fmt.Errorf("open object: %w", err)
+	}
+	defer reader.Close()
+
+	imageBytes, err := io.ReadAll(reader)
+	if err != nil {
+		return fmt.Errorf("read object: %w", err)
+	}
+
+	vector, err := ComputeImageVector(imageBytes)
+	if err != nil {
+		return fmt.Errorf("compute vector: %w", err)
+	}
+	if len(vector) == 0 {
+		return fmt.Errorf("computed empty image vector")
+	}
+
+	if err := UpdateImageVectorOnly(p.cfg, imageFileID, vector); err != nil {
+		return fmt.Errorf("update image vector: %w", err)
+	}
+	return nil
+}
+
 func (p *Processor) uploadObject(ctx context.Context, bucketName, objectName, contentType string, payload []byte) error {
 	writer := p.storage.Bucket(bucketName).Object(objectName).NewWriter(ctx)
 	writer.ContentType = contentType

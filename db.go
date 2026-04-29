@@ -3,8 +3,12 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
+	"time"
 
 	_ "github.com/lib/pq"
 )
@@ -13,6 +17,23 @@ type Duplicate struct {
 	ID  string `json:"id"`
 	URL string `json:"url"`
 }
+
+type ImageVectorBackfillCandidate struct {
+	ID                 string
+	ImageFileID        string
+	ImageFileExtension string
+	ImageBucket        string
+}
+
+type ListImageVectorBackfillCandidatesInput struct {
+	Mode              string
+	Limit             int
+	Cursor            string
+	MaxRetries        int
+	OnlyOlderThanMins int
+}
+
+var ErrInvalidCursor = errors.New("invalid cursor")
 
 func getDBConnection(cfg Config) (*sql.DB, error) {
 	connStr := fmt.Sprintf("host=%s dbname=%s user=%s password=%s sslmode=disable",
@@ -34,7 +55,7 @@ func UpdateImageMetadata(cfg Config, imageFileID, phashStr, bucketName string, e
 	if len(imageVector) > 0 {
 		vectorBytes, _ := json.Marshal(imageVector)
 		vectorStr := string(vectorBytes)
-		
+
 		// Find similar images with pHash Hamming distance <= 5 OR Vector Cosine distance <= threshold
 		query := fmt.Sprintf(`
 			SELECT id, "imageFile_id", "imageFile_extension" FROM "%s"
@@ -116,5 +137,157 @@ func UpdateImageMetadata(cfg Config, imageFileID, phashStr, bucketName string, e
 	}
 
 	log.Printf("pHash and Metadata updated for %s: phash=%s, similar count=%d", imageFileID, phashStr, len(duplicates))
+	return nil
+}
+
+func UpdateImageVectorOnly(cfg Config, imageFileID string, imageVector []float64) error {
+	db, err := getDBConnection(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to connect to db: %w", err)
+	}
+	defer db.Close()
+
+	tableName := cfg.QueriedDbTable
+	vectorBytes, _ := json.Marshal(imageVector)
+	vectorStr := string(vectorBytes)
+
+	updateQuery := fmt.Sprintf(`
+		UPDATE "%s"
+		SET "imageVector" = $1::vector,
+		    "imageVectorUpdatedAt" = NOW(),
+		    "imageVectorStatus" = 'success',
+		    "imageVectorFailReason" = NULL
+		WHERE "imageFile_id" = $2
+	`, tableName)
+	if _, err := db.Exec(updateQuery, vectorStr, imageFileID); err != nil {
+		return fmt.Errorf("failed to update image vector: %w", err)
+	}
+	return nil
+}
+
+func ListImageVectorBackfillCandidates(cfg Config, input ListImageVectorBackfillCandidatesInput) ([]ImageVectorBackfillCandidate, error) {
+	db, err := getDBConnection(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to db: %w", err)
+	}
+	defer db.Close()
+
+	tableName := cfg.QueriedDbTable
+	conds := []string{}
+	args := []interface{}{}
+	argN := 1
+	conds = append(conds, `"imageFile_id" IS NOT NULL AND btrim("imageFile_id") != ''`)
+
+	switch strings.ToLower(strings.TrimSpace(input.Mode)) {
+	case "missing":
+		conds = append(conds, `"imageVector" IS NULL`)
+	case "failed":
+		conds = append(conds, `"imageVectorStatus" = 'failed'`)
+	case "all":
+	default:
+		return nil, fmt.Errorf("invalid mode: %s", input.Mode)
+	}
+
+	if input.MaxRetries > 0 {
+		conds = append(conds, fmt.Sprintf(`COALESCE("imageVectorRetryCount", 0) < $%d`, argN))
+		args = append(args, input.MaxRetries)
+		argN++
+	}
+
+	if input.OnlyOlderThanMins > 0 {
+		conds = append(conds, fmt.Sprintf(`("imageVectorFailedAt" IS NULL OR "imageVectorFailedAt" <= NOW() - ($%d || ' minutes')::interval)`, argN))
+		args = append(args, input.OnlyOlderThanMins)
+		argN++
+	}
+
+	if strings.TrimSpace(input.Cursor) != "" {
+		cursorID, parseErr := strconv.ParseInt(strings.TrimSpace(input.Cursor), 10, 64)
+		if parseErr != nil {
+			return nil, fmt.Errorf("%w: must be integer", ErrInvalidCursor)
+		}
+		conds = append(conds, fmt.Sprintf(`id > $%d`, argN))
+		args = append(args, cursorID)
+		argN++
+	}
+
+	whereClause := ""
+	if len(conds) > 0 {
+		whereClause = "WHERE " + strings.Join(conds, " AND ")
+	}
+
+	query := fmt.Sprintf(`
+		SELECT
+			id,
+			"imageFile_id",
+			COALESCE("imageFile_extension", '')
+		FROM "%s"
+		%s
+		ORDER BY id ASC
+		LIMIT $%d
+	`, tableName, whereClause, argN)
+	args = append(args, input.Limit)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query backfill candidates: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]ImageVectorBackfillCandidate, 0, input.Limit)
+	for rows.Next() {
+		var item ImageVectorBackfillCandidate
+		var id int64
+		if err := rows.Scan(&id, &item.ImageFileID, &item.ImageFileExtension); err != nil {
+			return nil, fmt.Errorf("scan backfill candidate: %w", err)
+		}
+		item.ID = strconv.FormatInt(id, 10)
+		item.ImageBucket = cfg.ImageBucket
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate backfill candidates: %w", err)
+	}
+
+	return items, nil
+}
+
+func MarkImageVectorBackfillAttempt(cfg Config, imageFileID string) error {
+	db, err := getDBConnection(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to connect to db: %w", err)
+	}
+	defer db.Close()
+
+	tableName := cfg.QueriedDbTable
+	query := fmt.Sprintf(`
+		UPDATE "%s"
+		SET "imageVectorStatus" = 'pending',
+		    "imageVectorRetryCount" = COALESCE("imageVectorRetryCount", 0) + 1
+		WHERE "imageFile_id" = $1
+	`, tableName)
+	if _, err := db.Exec(query, imageFileID); err != nil {
+		return fmt.Errorf("mark backfill attempt: %w", err)
+	}
+	return nil
+}
+
+func MarkImageVectorBackfillFailed(cfg Config, imageFileID, reason string, failedAt time.Time) error {
+	db, err := getDBConnection(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to connect to db: %w", err)
+	}
+	defer db.Close()
+
+	tableName := cfg.QueriedDbTable
+	query := fmt.Sprintf(`
+		UPDATE "%s"
+		SET "imageVectorStatus" = 'failed',
+		    "imageVectorFailedAt" = $1,
+		    "imageVectorFailReason" = $2
+		WHERE "imageFile_id" = $3
+	`, tableName)
+	if _, err := db.Exec(query, failedAt, reason, imageFileID); err != nil {
+		return fmt.Errorf("mark backfill failed: %w", err)
+	}
 	return nil
 }
