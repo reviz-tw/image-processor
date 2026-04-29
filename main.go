@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"cloud.google.com/go/storage"
 )
@@ -34,17 +33,7 @@ func main() {
 		log.Fatalf("create processor: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", healthHandler)
-	mux.HandleFunc("/healthz", healthHandler)
-	mux.Handle("/image_processor", eventHandler(processor))
-	mux.Handle("/batch_backfill_image_vector", batchBackfillImageVectorHandler(processor))
-
-	server := &http.Server{
-		Addr:              ":" + cfg.Port,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	server := newHTTPServer(":"+cfg.Port, newRouter(processor))
 
 	log.Printf("image processor listening on :%s", cfg.Port)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

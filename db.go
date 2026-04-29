@@ -35,10 +35,15 @@ type ListImageVectorBackfillCandidatesInput struct {
 
 var ErrInvalidCursor = errors.New("invalid cursor")
 
-func getDBConnection(cfg Config) (*sql.DB, error) {
+// dbOpen opens the application database. Overridden in tests (e.g. sqlmock).
+var dbOpen = func(cfg Config) (*sql.DB, error) {
 	connStr := fmt.Sprintf("host=%s dbname=%s user=%s password=%s sslmode=disable",
 		cfg.DbHost, cfg.DbName, cfg.DbUser, cfg.DbPassword)
 	return sql.Open("postgres", connStr)
+}
+
+func getDBConnection(cfg Config) (*sql.DB, error) {
+	return dbOpen(cfg)
 }
 
 func UpdateImageMetadata(cfg Config, imageFileID, phashStr, bucketName string, exifData map[string]interface{}, imageVector []float64) error {
@@ -165,14 +170,7 @@ func UpdateImageVectorOnly(cfg Config, imageFileID string, imageVector []float64
 	return nil
 }
 
-func ListImageVectorBackfillCandidates(cfg Config, input ListImageVectorBackfillCandidatesInput) ([]ImageVectorBackfillCandidate, error) {
-	db, err := getDBConnection(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to db: %w", err)
-	}
-	defer db.Close()
-
-	tableName := cfg.QueriedDbTable
+func buildListImageVectorBackfillQuery(tableName string, input ListImageVectorBackfillCandidatesInput) (string, []interface{}, error) {
 	conds := []string{}
 	args := []interface{}{}
 	argN := 1
@@ -185,7 +183,7 @@ func ListImageVectorBackfillCandidates(cfg Config, input ListImageVectorBackfill
 		conds = append(conds, `"imageVectorStatus" = 'failed'`)
 	case "all":
 	default:
-		return nil, fmt.Errorf("invalid mode: %s", input.Mode)
+		return "", nil, fmt.Errorf("invalid mode: %s", input.Mode)
 	}
 
 	if input.MaxRetries > 0 {
@@ -203,7 +201,7 @@ func ListImageVectorBackfillCandidates(cfg Config, input ListImageVectorBackfill
 	if strings.TrimSpace(input.Cursor) != "" {
 		cursorID, parseErr := strconv.ParseInt(strings.TrimSpace(input.Cursor), 10, 64)
 		if parseErr != nil {
-			return nil, fmt.Errorf("%w: must be integer", ErrInvalidCursor)
+			return "", nil, fmt.Errorf("%w: must be integer", ErrInvalidCursor)
 		}
 		conds = append(conds, fmt.Sprintf(`id > $%d`, argN))
 		args = append(args, cursorID)
@@ -226,6 +224,21 @@ func ListImageVectorBackfillCandidates(cfg Config, input ListImageVectorBackfill
 		LIMIT $%d
 	`, tableName, whereClause, argN)
 	args = append(args, input.Limit)
+	return query, args, nil
+}
+
+func ListImageVectorBackfillCandidates(cfg Config, input ListImageVectorBackfillCandidatesInput) ([]ImageVectorBackfillCandidate, error) {
+	db, err := getDBConnection(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to db: %w", err)
+	}
+	defer db.Close()
+
+	tableName := cfg.QueriedDbTable
+	query, args, err := buildListImageVectorBackfillQuery(tableName, input)
+	if err != nil {
+		return nil, err
+	}
 
 	rows, err := db.Query(query, args...)
 	if err != nil {

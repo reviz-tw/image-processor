@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -35,13 +36,33 @@ type batchBackfillImageVectorResponse struct {
 	Failed     int    `json:"failed"`
 }
 
+type batchBackfillDeps struct {
+	Cfg         Config
+	List        func(Config, ListImageVectorBackfillCandidatesInput) ([]ImageVectorBackfillCandidate, error)
+	MarkAttempt func(Config, string) error
+	MarkFailed  func(Config, string, string, time.Time) error
+	Backfill    func(context.Context, string, string, string) error
+}
+
 func batchBackfillImageVectorHandler(processor *Processor) http.Handler {
+	return batchBackfillImageVectorHandlerWithDeps(batchBackfillDeps{
+		Cfg:         processor.cfg,
+		List:        ListImageVectorBackfillCandidates,
+		MarkAttempt: MarkImageVectorBackfillAttempt,
+		MarkFailed:  MarkImageVectorBackfillFailed,
+		Backfill: func(ctx context.Context, bucket, object, imageFileID string) error {
+			return processor.BackfillImageVectorFromObject(ctx, bucket, object, imageFileID)
+		},
+	})
+}
+
+func batchBackfillImageVectorHandlerWithDeps(deps batchBackfillDeps) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if !authorizeBackfillRequest(processor.cfg, r) {
+		if !authorizeBackfillRequest(deps.Cfg, r) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -77,7 +98,7 @@ func batchBackfillImageVectorHandler(processor *Processor) http.Handler {
 			return
 		}
 
-		candidates, err := ListImageVectorBackfillCandidates(processor.cfg, ListImageVectorBackfillCandidatesInput{
+		candidates, err := deps.List(deps.Cfg, ListImageVectorBackfillCandidatesInput{
 			Mode:              string(mode),
 			Limit:             limit,
 			Cursor:            strings.TrimSpace(req.Cursor),
@@ -100,7 +121,7 @@ func batchBackfillImageVectorHandler(processor *Processor) http.Handler {
 		for _, c := range candidates {
 			nextCursor = c.ID
 
-			if err := MarkImageVectorBackfillAttempt(processor.cfg, c.ImageFileID); err != nil {
+			if err := deps.MarkAttempt(deps.Cfg, c.ImageFileID); err != nil {
 				log.Printf("mark retry count failed: id=%s imageFileID=%s err=%v", c.ID, c.ImageFileID, err)
 			}
 
@@ -108,17 +129,17 @@ func batchBackfillImageVectorHandler(processor *Processor) http.Handler {
 			if strings.TrimSpace(c.ImageBucket) == "" {
 				failed++
 				reason := "missing image bucket; set IMAGE_BUCKET env"
-				if updateErr := MarkImageVectorBackfillFailed(processor.cfg, c.ImageFileID, reason, time.Now()); updateErr != nil {
+				if updateErr := deps.MarkFailed(deps.Cfg, c.ImageFileID, reason, time.Now()); updateErr != nil {
 					log.Printf("mark image vector failed status error: imageFileID=%s err=%v", c.ImageFileID, updateErr)
 				}
 				log.Printf("backfill image vector failed: id=%s imageFileID=%s object=%s err=%s", c.ID, c.ImageFileID, objectName, reason)
 				continue
 			}
-			err := processor.BackfillImageVectorFromObject(r.Context(), c.ImageBucket, objectName, c.ImageFileID)
+			err := deps.Backfill(r.Context(), c.ImageBucket, objectName, c.ImageFileID)
 			if err != nil {
 				failed++
 				reason := truncateReason(err.Error(), 1024)
-				if updateErr := MarkImageVectorBackfillFailed(processor.cfg, c.ImageFileID, reason, time.Now()); updateErr != nil {
+				if updateErr := deps.MarkFailed(deps.Cfg, c.ImageFileID, reason, time.Now()); updateErr != nil {
 					log.Printf("mark image vector failed status error: imageFileID=%s err=%v", c.ImageFileID, updateErr)
 				}
 				log.Printf("backfill image vector failed: id=%s imageFileID=%s object=%s err=%v", c.ID, c.ImageFileID, objectName, err)
