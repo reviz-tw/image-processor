@@ -4,11 +4,8 @@ go 1.23.0
 
 require (
 	cloud.google.com/go/storage v1.43.0
-	github.com/DATA-DOG/go-sqlmock v1.5.2
-	github.com/corona10/goimagehash v1.1.0
 	github.com/fsouza/fake-gcs-server v1.47.4
 	github.com/gen2brain/webp v0.5.5
-	github.com/lib/pq v1.12.3
 	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
 	golang.org/x/image v0.19.0
 )
@@ -33,7 +30,6 @@ require (
 	github.com/googleapis/gax-go/v2 v2.12.5 // indirect
 	github.com/gorilla/handlers v1.5.1 // indirect
 	github.com/gorilla/mux v1.8.0 // indirect
-	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
 	github.com/pkg/xattr v0.4.9 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/tetratelabs/wazero v1.9.0 // indirect

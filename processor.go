@@ -17,22 +17,14 @@ import (
 	"strings"
 
 	"cloud.google.com/go/storage"
-	"github.com/corona10/goimagehash"
 	webp "github.com/gen2brain/webp"
 	exifpkg "github.com/rwcarlsen/goexif/exif"
-	"github.com/rwcarlsen/goexif/tiff"
 	xdraw "golang.org/x/image/draw"
 	xtiff "golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"
 )
 
 var derivedObjectPattern = regexp.MustCompile(`-w\d{2,}`)
-
-var (
-	updateImageMetadata   = UpdateImageMetadata
-	updateImageVectorOnly = UpdateImageVectorOnly
-	computeImageVector    = ComputeImageVector
-)
 
 type Processor struct {
 	cfg       Config
@@ -93,7 +85,6 @@ func (p *Processor) Process(ctx context.Context, event storageEvent) error {
 		return fmt.Errorf("decode image: %w", err)
 	}
 	sourceImg = applyEXIFOrientation(sourceImg, originalBytes)
-	exifMap := extractAllEXIF(originalBytes)
 
 	base := filepath.Base(event.Name)
 	ext := filepath.Ext(base)
@@ -133,75 +124,10 @@ func (p *Processor) Process(ctx context.Context, event storageEvent) error {
 			return err
 		}
 
-		if target.Label == "w480" {
-			p.handleW480Metadata(event.Name, event.Bucket, nameWithoutExt, resized, exifMap, mainBytes)
-		}
-
 		mainBytes = nil
 		webpBytes = nil
 	}
 
-	return nil
-}
-
-func (p *Processor) handleW480Metadata(eventName, bucketName, imageFileID string, resized image.Image, exifMap map[string]interface{}, encodedW480Bytes []byte) {
-	hash, err := goimagehash.PerceptionHash(resized)
-	if err != nil {
-		log.Printf("failed to compute phash for %s: %v", eventName, err)
-		return
-	}
-	phashStr := fmt.Sprintf("%016x", hash.GetHash())
-
-	if err := updateImageMetadata(p.cfg, imageFileID, phashStr, bucketName, exifMap, nil); err != nil {
-		log.Printf("failed to update image metadata for %s: %v", eventName, err)
-	}
-
-	if !p.cfg.EnableImageVector {
-		return
-	}
-
-	vectorPayload := append([]byte(nil), encodedW480Bytes...)
-	go p.computeAndUpdateImageVector(eventName, bucketName, imageFileID, phashStr, exifMap, vectorPayload)
-}
-
-func (p *Processor) computeAndUpdateImageVector(eventName, bucketName, imageFileID, phashStr string, exifMap map[string]interface{}, encodedW480Bytes []byte) {
-	vec, err := computeImageVector(encodedW480Bytes)
-	if err != nil {
-		log.Printf("failed to compute image vector for %s: %v", eventName, err)
-		return
-	}
-	if len(vec) == 0 {
-		log.Printf("computed empty image vector for %s", eventName)
-		return
-	}
-	if err := updateImageMetadata(p.cfg, imageFileID, phashStr, bucketName, exifMap, vec); err != nil {
-		log.Printf("failed to update image vector for %s: %v", eventName, err)
-	}
-}
-
-func (p *Processor) BackfillImageVectorFromObject(ctx context.Context, bucketName, objectName, imageFileID string) error {
-	reader, err := p.storage.Bucket(bucketName).Object(objectName).NewReader(ctx)
-	if err != nil {
-		return fmt.Errorf("open object: %w", err)
-	}
-	defer reader.Close()
-
-	imageBytes, err := io.ReadAll(reader)
-	if err != nil {
-		return fmt.Errorf("read object: %w", err)
-	}
-
-	vector, err := computeImageVector(imageBytes)
-	if err != nil {
-		return fmt.Errorf("compute vector: %w", err)
-	}
-	if len(vector) == 0 {
-		return fmt.Errorf("computed empty image vector")
-	}
-
-	if err := updateImageVectorOnly(p.cfg, imageFileID, vector); err != nil {
-		return fmt.Errorf("update image vector: %w", err)
-	}
 	return nil
 }
 
@@ -373,25 +299,6 @@ func exifOrientation(data []byte) int {
 		return 1
 	}
 	return orientation
-}
-
-type exifWalker struct {
-	Data map[string]interface{}
-}
-
-func (w *exifWalker) Walk(name exifpkg.FieldName, tag *tiff.Tag) error {
-	w.Data[string(name)] = tag.String()
-	return nil
-}
-
-func extractAllEXIF(data []byte) map[string]interface{} {
-	exifData, err := exifpkg.Decode(bytes.NewReader(data))
-	if err != nil {
-		return map[string]interface{}{}
-	}
-	walker := &exifWalker{Data: make(map[string]interface{})}
-	exifData.Walk(walker)
-	return walker.Data
 }
 
 func rotate180(src image.Image) *image.NRGBA {

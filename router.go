@@ -7,10 +7,15 @@ import (
 
 func newRouter(processor *Processor) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", healthHandler)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		healthHandler(w, r)
+	})
 	mux.HandleFunc("/healthz", healthHandler)
 	mux.Handle("/image_processor", eventHandler(processor))
-	mux.Handle("/batch_backfill_image_vector", batchBackfillImageVectorHandler(processor))
 	return mux
 }
 
