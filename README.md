@@ -6,6 +6,7 @@
 - 從 GCS 下載原圖並產出多組 resize 圖
 - 上傳原尺寸 `.webP`、resize 後的原格式檔與 resize 後的 `.webP`
 - 透過 env variables 決定是否加上 watermark
+- 不計算 image vector，也不寫回 CMS DB
 
 ## Event 格式
 
@@ -31,9 +32,6 @@ HTTP endpoint:
 - `WATERMARK_OPACITY`: `0` 到 `1`，預設 `1.0`
 - `CACHE_CONTROL`: 上傳到 GCS 時寫入的 cache control，預設 `public, max-age=31536000`
 - `MAX_SOURCE_PIXELS`: 原圖 decode 前允許的最高像素數，預設 `60000000`；設為 `0` 可關閉限制
-- `ENABLE_IMAGE_VECTOR`: 是否啟用 CLIP image vector sidecar，預設 `false`
-- `VECTOR_IMAGE_MAX_SIZE`: vector sidecar 送進 CLIP 前的最長邊，預設 `384`
-- `TORCH_NUM_THREADS`: vector sidecar 的 Torch CPU thread 數，預設 `1`
 
 ## 本機執行
 
