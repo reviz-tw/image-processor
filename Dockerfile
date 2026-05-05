@@ -7,10 +7,10 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/image-processor .
 
-FROM gcr.io/distroless/static-debian12
+FROM gcr.io/distroless/base-debian12
 WORKDIR /app
 
-COPY --from=builder /out/image-processor /app/image-processor
+COPY --from=builder /out/image-processor /image-processor
 
 EXPOSE 8080
-ENTRYPOINT ["/app/image-processor"]
+ENTRYPOINT ["/image-processor"]
