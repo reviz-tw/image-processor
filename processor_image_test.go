@@ -109,9 +109,6 @@ func TestApplyEXIFOrientationAndExifHelpers(t *testing.T) {
 	if exifOrientation([]byte{0}) != 1 {
 		t.Fatal()
 	}
-	if len(extractAllEXIF([]byte{0})) != 0 {
-		t.Fatal()
-	}
 }
 
 func TestValidateSourceImageSizeRejectsTooManyPixels(t *testing.T) {

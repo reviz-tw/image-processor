@@ -6,6 +6,7 @@
 - 從 GCS 下載原圖並產出多組 resize 圖
 - 上傳原尺寸 `.webP`、resize 後的原格式檔與 resize 後的 `.webP`
 - 透過 env variables 決定是否加上 watermark
+- 不計算 image vector，也不寫回 CMS DB
 
 ## Event 格式
 
@@ -31,9 +32,6 @@ HTTP endpoint:
 - `WATERMARK_OPACITY`: `0` 到 `1`，預設 `1.0`
 - `CACHE_CONTROL`: 上傳到 GCS 時寫入的 cache control，預設 `public, max-age=31536000`
 - `MAX_SOURCE_PIXELS`: 原圖 decode 前允許的最高像素數，預設 `60000000`；設為 `0` 可關閉限制
-- `ENABLE_IMAGE_VECTOR`: 是否啟用 CLIP image vector sidecar，預設 `false`
-- `VECTOR_IMAGE_MAX_SIZE`: vector sidecar 送進 CLIP 前的最長邊，預設 `384`
-- `TORCH_NUM_THREADS`: vector sidecar 的 Torch CPU thread 數，預設 `1`
 
 ## 本機執行
 
@@ -66,6 +64,9 @@ go run .
 
 - 只處理副檔名為 `jpg`、`jpeg`、`png`、`gif`、`tif`、`tiff`、`webp`
 - 會略過系統產生的混合大小寫 `.webP`，避免重複處理
-- 已經帶有 `-w###` 的檔名會直接略過，避免無限遞迴
+- 預設已經帶有 `-w###` 的檔名會直接略過，避免無限遞迴
+- 若 GCS event 帶有 source object generation，輸出物件會寫入 `sourceGeneration` metadata；同一個 source generation 重送時，服務會用最後一個 resize target 的 `.webP` 當完成 sentinel 直接略過，避免重複 resize
 - 每個 resize target 會輸出原副檔名版本，例如 `images/foo-w800.jpg`
 - 每個 resize target 也會輸出 WebP 版本，例如 `images/foo-w800.webP`
+
+GCS notification 仍會對每個新物件送出事件。若要從源頭減少 Pub/Sub 訊息量，應把 source 與衍生檔放在不同 prefix 或 bucket，並只對 source prefix 建立 notification；只靠 subscription filter 無法可靠排除 `-w###` suffix。

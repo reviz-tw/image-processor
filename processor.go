@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	imagedraw "image/draw"
@@ -17,22 +18,16 @@ import (
 	"strings"
 
 	"cloud.google.com/go/storage"
-	"github.com/corona10/goimagehash"
 	webp "github.com/gen2brain/webp"
 	exifpkg "github.com/rwcarlsen/goexif/exif"
-	"github.com/rwcarlsen/goexif/tiff"
 	xdraw "golang.org/x/image/draw"
 	xtiff "golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"
 )
 
-var derivedObjectPattern = regexp.MustCompile(`-w\d{2,}`)
+const sourceGenerationMetadataKey = "sourceGeneration"
 
-var (
-	updateImageMetadata   = UpdateImageMetadata
-	updateImageVectorOnly = UpdateImageVectorOnly
-	computeImageVector    = ComputeImageVector
-)
+var trailingResizeLabelPattern = regexp.MustCompile(`(?:^|.*-)(w\d{2,})$`)
 
 type Processor struct {
 	cfg       Config
@@ -66,8 +61,24 @@ func (p *Processor) Process(ctx context.Context, event storageEvent) error {
 		log.Printf("skip unsupported object: %s", event.Name)
 		return nil
 	}
-	if derivedObjectPattern.MatchString(event.Name) {
+	if isDerivedObjectName(event.Name) {
 		log.Printf("skip derived object: %s", event.Name)
+		return nil
+	}
+
+	base := filepath.Base(event.Name)
+	ext := filepath.Ext(base)
+	imageFileID := strings.TrimSuffix(base, ext)
+	baseDir := strings.TrimSuffix(event.Name, base)
+
+	originalWebPName := baseDir + imageFileID + ".webP"
+	completionSentinelName := completionSentinelObjectName(baseDir, imageFileID, originalWebPName, p.cfg.ResizeTargets)
+	alreadyProcessed, err := p.alreadyProcessedSourceGeneration(ctx, event.Bucket, completionSentinelName, event.Generation)
+	if err != nil {
+		return err
+	}
+	if alreadyProcessed {
+		log.Printf("skip already processed source generation: object=%s generation=%s", event.Name, event.Generation)
 		return nil
 	}
 
@@ -93,19 +104,12 @@ func (p *Processor) Process(ctx context.Context, event storageEvent) error {
 		return fmt.Errorf("decode image: %w", err)
 	}
 	sourceImg = applyEXIFOrientation(sourceImg, originalBytes)
-	exifMap := extractAllEXIF(originalBytes)
 
-	base := filepath.Base(event.Name)
-	ext := filepath.Ext(base)
-	nameWithoutExt := strings.TrimSuffix(base, filepath.Ext(base))
-	baseDir := strings.TrimSuffix(event.Name, base)
-
-	originalWebPName := baseDir + nameWithoutExt + ".webP"
 	originalWebPBytes, err := encodeWebP(sourceImg)
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", originalWebPName, err)
 	}
-	if err := p.uploadObject(ctx, event.Bucket, originalWebPName, "image/webp", originalWebPBytes); err != nil {
+	if err := p.uploadObject(ctx, event.Bucket, originalWebPName, "image/webp", originalWebPBytes, event.Generation); err != nil {
 		return err
 	}
 
@@ -115,26 +119,22 @@ func (p *Processor) Process(ctx context.Context, event storageEvent) error {
 			resized = applyWatermark(resized, p.watermark, p.cfg.WatermarkScale, p.cfg.WatermarkMarginRatio, p.cfg.WatermarkOpacity)
 		}
 
-		mainObjectName := baseDir + nameWithoutExt + "-" + target.Label + ext
+		mainObjectName := baseDir + imageFileID + "-" + target.Label + ext
 		mainBytes, err := encodeByExt(resized, ext)
 		if err != nil {
 			return fmt.Errorf("encode %s: %w", mainObjectName, err)
 		}
-		if err := p.uploadObject(ctx, event.Bucket, mainObjectName, contentTypeFromExt(ext), mainBytes); err != nil {
+		if err := p.uploadObject(ctx, event.Bucket, mainObjectName, contentTypeFromExt(ext), mainBytes, event.Generation); err != nil {
 			return err
 		}
 
-		webpObjectName := baseDir + nameWithoutExt + "-" + target.Label + ".webP"
+		webpObjectName := baseDir + imageFileID + "-" + target.Label + ".webP"
 		webpBytes, err := encodeWebP(resized)
 		if err != nil {
 			return fmt.Errorf("encode %s: %w", webpObjectName, err)
 		}
-		if err := p.uploadObject(ctx, event.Bucket, webpObjectName, "image/webp", webpBytes); err != nil {
+		if err := p.uploadObject(ctx, event.Bucket, webpObjectName, "image/webp", webpBytes, event.Generation); err != nil {
 			return err
-		}
-
-		if target.Label == "w480" {
-			p.handleW480Metadata(event.Name, event.Bucket, nameWithoutExt, resized, exifMap, mainBytes)
 		}
 
 		mainBytes = nil
@@ -144,71 +144,44 @@ func (p *Processor) Process(ctx context.Context, event storageEvent) error {
 	return nil
 }
 
-func (p *Processor) handleW480Metadata(eventName, bucketName, imageFileID string, resized image.Image, exifMap map[string]interface{}, encodedW480Bytes []byte) {
-	hash, err := goimagehash.PerceptionHash(resized)
+func (p *Processor) alreadyProcessedSourceGeneration(ctx context.Context, bucketName, sentinelObjectName, sourceGeneration string) (bool, error) {
+	if sourceGeneration == "" {
+		return false, nil
+	}
+
+	attrs, err := p.storage.Bucket(bucketName).Object(sentinelObjectName).Attrs(ctx)
 	if err != nil {
-		log.Printf("failed to compute phash for %s: %v", eventName, err)
-		return
+		if errors.Is(err, storage.ErrObjectNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("check sentinel object %s: %w", sentinelObjectName, err)
 	}
-	phashStr := fmt.Sprintf("%016x", hash.GetHash())
-
-	if err := updateImageMetadata(p.cfg, imageFileID, phashStr, bucketName, exifMap, nil); err != nil {
-		log.Printf("failed to update image metadata for %s: %v", eventName, err)
-	}
-
-	if !p.cfg.EnableImageVector {
-		return
-	}
-
-	vectorPayload := append([]byte(nil), encodedW480Bytes...)
-	go p.computeAndUpdateImageVector(eventName, bucketName, imageFileID, phashStr, exifMap, vectorPayload)
+	return attrs.Metadata[sourceGenerationMetadataKey] == sourceGeneration, nil
 }
 
-func (p *Processor) computeAndUpdateImageVector(eventName, bucketName, imageFileID, phashStr string, exifMap map[string]interface{}, encodedW480Bytes []byte) {
-	vec, err := computeImageVector(encodedW480Bytes)
-	if err != nil {
-		log.Printf("failed to compute image vector for %s: %v", eventName, err)
-		return
+func isDerivedObjectName(name string) bool {
+	if filepath.Ext(name) == ".webP" {
+		return true
 	}
-	if len(vec) == 0 {
-		log.Printf("computed empty image vector for %s", eventName)
-		return
-	}
-	if err := updateImageMetadata(p.cfg, imageFileID, phashStr, bucketName, exifMap, vec); err != nil {
-		log.Printf("failed to update image vector for %s: %v", eventName, err)
-	}
+	return trailingResizeLabelPattern.MatchString(strings.TrimSuffix(filepath.Base(name), filepath.Ext(name)))
 }
 
-func (p *Processor) BackfillImageVectorFromObject(ctx context.Context, bucketName, objectName, imageFileID string) error {
-	reader, err := p.storage.Bucket(bucketName).Object(objectName).NewReader(ctx)
-	if err != nil {
-		return fmt.Errorf("open object: %w", err)
+func completionSentinelObjectName(baseDir, imageFileID, fallback string, targets []ResizeTarget) string {
+	if len(targets) == 0 {
+		return fallback
 	}
-	defer reader.Close()
-
-	imageBytes, err := io.ReadAll(reader)
-	if err != nil {
-		return fmt.Errorf("read object: %w", err)
-	}
-
-	vector, err := computeImageVector(imageBytes)
-	if err != nil {
-		return fmt.Errorf("compute vector: %w", err)
-	}
-	if len(vector) == 0 {
-		return fmt.Errorf("computed empty image vector")
-	}
-
-	if err := updateImageVectorOnly(p.cfg, imageFileID, vector); err != nil {
-		return fmt.Errorf("update image vector: %w", err)
-	}
-	return nil
+	return baseDir + imageFileID + "-" + targets[len(targets)-1].Label + ".webP"
 }
 
-func (p *Processor) uploadObject(ctx context.Context, bucketName, objectName, contentType string, payload []byte) error {
+func (p *Processor) uploadObject(ctx context.Context, bucketName, objectName, contentType string, payload []byte, sourceGeneration string) error {
 	writer := p.storage.Bucket(bucketName).Object(objectName).NewWriter(ctx)
 	writer.ContentType = contentType
 	writer.CacheControl = p.cfg.CacheControl
+	if sourceGeneration != "" {
+		writer.Metadata = map[string]string{
+			sourceGenerationMetadataKey: sourceGeneration,
+		}
+	}
 
 	if _, err := writer.Write(payload); err != nil {
 		_ = writer.Close()
@@ -373,25 +346,6 @@ func exifOrientation(data []byte) int {
 		return 1
 	}
 	return orientation
-}
-
-type exifWalker struct {
-	Data map[string]interface{}
-}
-
-func (w *exifWalker) Walk(name exifpkg.FieldName, tag *tiff.Tag) error {
-	w.Data[string(name)] = tag.String()
-	return nil
-}
-
-func extractAllEXIF(data []byte) map[string]interface{} {
-	exifData, err := exifpkg.Decode(bytes.NewReader(data))
-	if err != nil {
-		return map[string]interface{}{}
-	}
-	walker := &exifWalker{Data: make(map[string]interface{})}
-	exifData.Walk(walker)
-	return walker.Data
 }
 
 func rotate180(src image.Image) *image.NRGBA {
