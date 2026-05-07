@@ -24,7 +24,7 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
-var derivedObjectPattern = regexp.MustCompile(`-w\d{2,}`)
+var trailingResizeLabelPattern = regexp.MustCompile(`(?:^|.*-)(w\d{2,})$`)
 
 type Processor struct {
 	cfg       Config
@@ -58,7 +58,7 @@ func (p *Processor) Process(ctx context.Context, event storageEvent) error {
 		log.Printf("skip unsupported object: %s", event.Name)
 		return nil
 	}
-	if derivedObjectPattern.MatchString(event.Name) {
+	if isDerivedObjectName(event.Name) {
 		log.Printf("skip derived object: %s", event.Name)
 		return nil
 	}
@@ -88,10 +88,10 @@ func (p *Processor) Process(ctx context.Context, event storageEvent) error {
 
 	base := filepath.Base(event.Name)
 	ext := filepath.Ext(base)
-	nameWithoutExt := strings.TrimSuffix(base, filepath.Ext(base))
+	imageFileID := strings.TrimSuffix(base, ext)
 	baseDir := strings.TrimSuffix(event.Name, base)
 
-	originalWebPName := baseDir + nameWithoutExt + ".webP"
+	originalWebPName := baseDir + imageFileID + ".webP"
 	originalWebPBytes, err := encodeWebP(sourceImg)
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", originalWebPName, err)
@@ -106,7 +106,7 @@ func (p *Processor) Process(ctx context.Context, event storageEvent) error {
 			resized = applyWatermark(resized, p.watermark, p.cfg.WatermarkScale, p.cfg.WatermarkMarginRatio, p.cfg.WatermarkOpacity)
 		}
 
-		mainObjectName := baseDir + nameWithoutExt + "-" + target.Label + ext
+		mainObjectName := baseDir + imageFileID + "-" + target.Label + ext
 		mainBytes, err := encodeByExt(resized, ext)
 		if err != nil {
 			return fmt.Errorf("encode %s: %w", mainObjectName, err)
@@ -115,7 +115,7 @@ func (p *Processor) Process(ctx context.Context, event storageEvent) error {
 			return err
 		}
 
-		webpObjectName := baseDir + nameWithoutExt + "-" + target.Label + ".webP"
+		webpObjectName := baseDir + imageFileID + "-" + target.Label + ".webP"
 		webpBytes, err := encodeWebP(resized)
 		if err != nil {
 			return fmt.Errorf("encode %s: %w", webpObjectName, err)
@@ -129,6 +129,13 @@ func (p *Processor) Process(ctx context.Context, event storageEvent) error {
 	}
 
 	return nil
+}
+
+func isDerivedObjectName(name string) bool {
+	if filepath.Ext(name) == ".webP" {
+		return true
+	}
+	return trailingResizeLabelPattern.MatchString(strings.TrimSuffix(filepath.Base(name), filepath.Ext(name)))
 }
 
 func (p *Processor) uploadObject(ctx context.Context, bucketName, objectName, contentType string, payload []byte) error {

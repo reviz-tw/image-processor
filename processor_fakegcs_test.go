@@ -54,4 +54,8 @@ func TestProcess_WithFakeGCS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	if _, err := client.Bucket("test-bucket").Object("images/pipe-w480.jpg").Attrs(ctx); err != nil {
+		t.Fatal("expected resized output:", err)
+	}
 }

@@ -64,6 +64,8 @@ go run .
 
 - 只處理副檔名為 `jpg`、`jpeg`、`png`、`gif`、`tif`、`tiff`、`webp`
 - 會略過系統產生的混合大小寫 `.webP`，避免重複處理
-- 已經帶有 `-w###` 的檔名會直接略過，避免無限遞迴
+- 預設已經帶有 `-w###` 的檔名會直接略過，避免無限遞迴
 - 每個 resize target 會輸出原副檔名版本，例如 `images/foo-w800.jpg`
 - 每個 resize target 也會輸出 WebP 版本，例如 `images/foo-w800.webP`
+
+GCS notification 仍會對每個新物件送出事件。若要從源頭減少 Pub/Sub 訊息量，應把 source 與衍生檔放在不同 prefix 或 bucket，並只對 source prefix 建立 notification；只靠 subscription filter 無法可靠排除 `-w###` suffix。
